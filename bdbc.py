@@ -2,26 +2,32 @@
 Listen to windows focus changes, and close Dropbox Preference window
 when opened.
 """
+import logging
+import ctypes
+from sys import exit
+from pywinauto import Application, findwindows
+from fasteners import InterProcessLock
+from tempfile import gettempdir
 
-def only_one():
-    from tendo import singleton
-    me = singleton.SingleInstance() # will sys.exit(-1) if other instance is running
+logger = logging.getLogger()
+ch = logging.FileHandler(gettempdir() + '/bdbc.log')
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
 
 def kill_window():
-    from pywinauto import Application, findwindows
     try:
         for handle in findwindows.find_windows(title_re="(Dropbox Preferences|Preferencias de Dropbox)"):
             app = Application.connect(Application(), handle=handle)
             for window in app.windows_(title_re="(Dropbox Preferences|Preferencias de Dropbox)"):
+                logger.warning('Configuration window for Dropbox detected')
                 window.Close()
+                logger.warning('Configuration window for Dropbox closed')
     except findwindows.WindowNotFoundError:
         pass
 
 def foreground_window_hook():
-    import sys
-    import time
-    import ctypes
-    import ctypes.wintypes
 
     EVENT_SYSTEM_FOREGROUND = 0x0003
     WINEVENT_OUTOFCONTEXT = 0x0000
@@ -47,6 +53,7 @@ def foreground_window_hook():
         buff = ctypes.create_string_buffer(length + 1)
         user32.GetWindowTextA(hwnd, buff, length + 1)
         if b"Dropbox" in buff.value:
+            logger.info('Dropbox window detected')
             kill_window()
 
     WinEventProc = WinEventProcType(callback)
@@ -62,8 +69,7 @@ def foreground_window_hook():
         WINEVENT_OUTOFCONTEXT
     )
     if hook == 0:
-        print('SetWinEventHook failed')
-        sys.exit(1)
+        exit(1)
 
     msg = ctypes.wintypes.MSG()
     while user32.GetMessageW(ctypes.byref(msg), 0, 0, 0) != 0:
@@ -73,5 +79,12 @@ def foreground_window_hook():
     user32.UnhookWinEvent(hook)
     ole32.CoUninitialize()
 
-only_one()
-foreground_window_hook()
+logger.info('Acquiring lock')
+lock = InterProcessLock(gettempdir() + '/bdbc_lock_file')
+gotten = lock.acquire(timeout=10)
+
+if gotten:
+    logger.info('Lock acquired')
+    foreground_window_hook()
+else:
+    logger.info('Lock failed')
